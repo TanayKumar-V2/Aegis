@@ -10,6 +10,10 @@ from app.config import settings
 from app.database import Base
 from app.models.user import User  
 from app.models.care_circle import CareCircle  
+from app.models.entry import Entry
+from app.models.medication import Medication
+from app.models.interaction_flag import InteractionFlag
+from app.models.audit_log import AuditLog
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.database_url)
