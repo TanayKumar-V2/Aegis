@@ -1,12 +1,17 @@
 import uuid
+import re
+from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import select, and_, case
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models.user import User, UserRole
 from app.models.care_circle import CareCircle, CareCircleStatus
+from app.models.entry import Entry
+from app.models.interaction_flag import InteractionFlag
+from app.models.medication import Medication
 from app.schemas.care_circle import (
     CareCircleInvite,
     CareCircleResponse,
@@ -14,7 +19,9 @@ from app.schemas.care_circle import (
     PatientCareCircleResponse,
 )
 from app.middleware.auth_dependency import get_current_user
+from app.middleware.care_circle_permission import require_patient_access
 from app.services.audit import log_action
+from app.services.pdf_export import generate_patient_pdf
 
 router = APIRouter(prefix="/patients", tags=["patients"])
 
@@ -188,3 +195,62 @@ async def list_patient_care_circle(
         )
         for circle, doctor in result.all()
     ]
+
+
+@router.get("/{patient_id}/export-pdf")
+async def export_patient_pdf(
+    patient_id: uuid.UUID,
+    current_user: User = Depends(require_patient_access()),
+    db: AsyncSession = Depends(get_db),
+):
+    patient_result = await db.execute(select(User).where(User.id == patient_id))
+    patient = patient_result.scalar_one_or_none()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+
+    entries_result = await db.execute(
+        select(Entry).where(Entry.patient_id == patient_id).order_by(Entry.created_at.desc())
+    )
+    entries = list(entries_result.scalars().all())
+
+    medications_result = await db.execute(
+        select(Medication)
+        .join(Entry, Medication.entry_id == Entry.id)
+        .where(Medication.patient_id == patient_id)
+        .order_by(Medication.start_date.desc())
+    )
+    medications = list(medications_result.scalars().all())
+
+    flags_result = await db.execute(
+        select(InteractionFlag)
+        .where(
+            and_(
+                InteractionFlag.patient_id == patient_id,
+                InteractionFlag.resolved.is_(False),
+            )
+        )
+        .order_by(InteractionFlag.flagged_at.desc())
+    )
+    flags = list(flags_result.scalars().all())
+
+    pdf_bytes = generate_patient_pdf(patient, entries, medications, flags)
+    await log_action(
+        db=db,
+        actor_id=current_user.id,
+        patient_id=patient_id,
+        action="exported_pdf",
+        metadata={
+            "entry_count": len(entries),
+            "active_medication_count": sum(medication.is_active for medication in medications),
+            "unresolved_flag_count": len(flags),
+        },
+    )
+    await db.commit()
+
+    safe_name = re.sub(r"[^A-Za-z0-9]+", "-", patient.name).strip("-").lower()
+    filename = f"aegis-export-{safe_name}-{date.today().isoformat()}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
