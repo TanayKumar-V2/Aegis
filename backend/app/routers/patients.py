@@ -1,17 +1,30 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, case
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models.user import User, UserRole
 from app.models.care_circle import CareCircle, CareCircleStatus
-from app.schemas.care_circle import CareCircleInvite, CareCircleResponse, CareCircleUpdate
+from app.schemas.care_circle import (
+    CareCircleInvite,
+    CareCircleResponse,
+    CareCircleUpdate,
+    PatientCareCircleResponse,
+)
 from app.middleware.auth_dependency import get_current_user
 from app.services.audit import log_action
 
 router = APIRouter(prefix="/patients", tags=["patients"])
+
+
+CARE_CIRCLE_STATUS_ORDER = case(
+    (CareCircle.status == CareCircleStatus.ACTIVE, 0),
+    (CareCircle.status == CareCircleStatus.PENDING, 1),
+    (CareCircle.status == CareCircleStatus.REVOKED, 2),
+    else_=3,
+)
 
 
 @router.post(
@@ -138,3 +151,40 @@ async def accept_invite(
     await db.commit()
     await db.refresh(circle)
     return circle
+
+
+@router.get(
+    "/{patient_id}/care-circle",
+    response_model=list[PatientCareCircleResponse],
+)
+async def list_patient_care_circle(
+    patient_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    if current_user.role != UserRole.PATIENT or current_user.id != patient_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the patient can view their own care circle",
+        )
+
+    result = await db.execute(
+        select(CareCircle, User)
+        .join(User, User.id == CareCircle.doctor_id)
+        .where(CareCircle.patient_id == patient_id)
+        .order_by(CARE_CIRCLE_STATUS_ORDER, CareCircle.created_at.desc())
+    )
+
+    return [
+        PatientCareCircleResponse(
+            circle_id=circle.id,
+            doctor_id=doctor.id,
+            doctor_name=doctor.name,
+            doctor_email=doctor.email,
+            doctor_specialty=doctor.specialty,
+            permission_scope=circle.permission_scope,
+            status=circle.status,
+            created_at=circle.created_at,
+        )
+        for circle, doctor in result.all()
+    ]

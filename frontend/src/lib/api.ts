@@ -5,6 +5,7 @@ import axios, { type InternalAxiosRequestConfig } from "axios";
 const API_URL = process.env.NEXT_PUBLIC_API_URL;
 
 type RetriableRequestConfig = InternalAxiosRequestConfig & { _retry?: boolean };
+type TokenPair = { access_token: string; refresh_token: string };
 let refreshPromise: Promise<string | null> | null = null;
 
 function clearSessionAndRedirect() {
@@ -22,7 +23,10 @@ async function refreshAccessToken() {
 
   refreshPromise = axios
     .post(`${API_URL}/auth/refresh`, { refresh_token: refreshToken }, { headers: { "Content-Type": "application/json" } })
-    .then(({ data }) => {
+    .then(({ data }: { data: TokenPair }) => {
+      if (!data.access_token || !data.refresh_token) {
+        throw new Error("Refresh response did not include a complete token pair");
+      }
       if (typeof window !== "undefined") {
         localStorage.setItem("access_token", data.access_token);
         localStorage.setItem("refresh_token", data.refresh_token);
@@ -55,6 +59,8 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
+    // Retry each failed request once after a single-flight refresh; only clear
+    // the session and redirect when the refresh token is also no longer valid.
     const config = error.config as RetriableRequestConfig | undefined;
     const isRefreshRequest = typeof config?.url === "string" && config.url.includes("/auth/refresh");
 
