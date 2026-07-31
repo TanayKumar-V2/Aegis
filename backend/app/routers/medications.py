@@ -13,6 +13,7 @@ from app.schemas.medication import MedicationCreate, MedicationResponse, Interac
 from app.middleware.care_circle_permission import require_patient_access
 from app.services.rxnorm import get_rxcui
 from app.services.interaction_data import find_interaction
+from app.services.websocket_manager import websocket_manager
 
 router = APIRouter(prefix="/patients/{patient_id}/entries/{entry_id}/medications", tags=["medications"])
 
@@ -93,6 +94,14 @@ async def add_medication(
             await db.commit()
             for flag in new_flags:
                 await db.refresh(flag)
+            for flag in new_flags:
+                await websocket_manager.broadcast_to_patient(
+                    str(patient_id),
+                    {
+                        "type": "new_interaction_flag",
+                        "flag": InteractionFlagResponse.model_validate(flag).model_dump(mode="json"),
+                    },
+                )
 
     return {
         "medication": MedicationResponse.model_validate(medication),

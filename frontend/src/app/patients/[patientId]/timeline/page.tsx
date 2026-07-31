@@ -33,6 +33,7 @@ const resolutionSchema = z.object({ resolution_note: z.string().max(1000, "Keep 
 type EntryForm = z.infer<typeof entrySchema>;
 type MedicationForm = z.infer<typeof medicationSchema>;
 type ResolutionForm = z.infer<typeof resolutionSchema>;
+type RealtimeFlagMessage = { type: "new_interaction_flag"; flag: InteractionFlag };
 
 const entryLabels: Record<EntryType, string> = { note: "Note", prescription: "Prescription", diagnosis: "Diagnosis", test_order: "Test order" };
 const entryColors: Record<EntryType, string> = { note: "border-l-sky-400", prescription: "border-l-violet-400", diagnosis: "border-l-amber-400", test_order: "border-l-emerald-400" };
@@ -121,6 +122,60 @@ export default function TimelinePage() {
   }, [patientId]);
 
   useEffect(() => { const timer = window.setTimeout(() => { if (!localStorage.getItem("access_token")) { router.replace("/login"); return; } if (!user) { fetchCurrentUser().catch(() => undefined); return; } void loadTimeline(); }, 0); return () => window.clearTimeout(timer); }, [fetchCurrentUser, loadTimeline, router, user]);
+
+  useEffect(() => {
+    if (isLoading || !user || forbidden) return;
+
+    const accessToken = localStorage.getItem("access_token");
+    const configuredApiUrl = process.env.NEXT_PUBLIC_API_URL;
+    if (!accessToken || !configuredApiUrl) return;
+    const token = accessToken;
+    const apiUrl = configuredApiUrl;
+
+    let socket: WebSocket | null = null;
+    let reconnectTimer: number | undefined;
+    let disposed = false;
+    let reconnectAttempts = 0;
+    const maxReconnectAttempts = 3;
+
+    function connect() {
+      if (disposed) return;
+
+      const websocketOrigin = apiUrl.replace(/\/$/, "").replace(/^http:/, "ws:").replace(/^https:/, "wss:");
+      const websocketUrl = `${websocketOrigin}/ws/patients/${patientId}/flags?token=${encodeURIComponent(token)}`;
+      socket = new WebSocket(websocketUrl);
+
+      socket.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data) as RealtimeFlagMessage;
+          if (message.type !== "new_interaction_flag" || !message.flag?.id) return;
+
+          setFlags((current) => current.some((flag) => flag.id === message.flag.id) ? current : [message.flag, ...current]);
+          toast.warning(`${message.flag.severity.toUpperCase()} interaction alert`, { description: message.flag.description });
+        } catch {
+          // Ignore malformed messages so one bad event cannot break live alerts.
+        }
+      };
+
+      socket.onerror = () => socket?.close();
+      socket.onclose = () => {
+        if (disposed || reconnectAttempts >= maxReconnectAttempts) {
+          if (!disposed && reconnectAttempts >= maxReconnectAttempts) toast.error("Live alerts are unavailable. Refresh to try again.");
+          return;
+        }
+
+        reconnectAttempts += 1;
+        reconnectTimer = window.setTimeout(connect, 2000);
+      };
+    }
+
+    connect();
+    return () => {
+      disposed = true;
+      if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
+      socket?.close(1000, "Leaving patient timeline");
+    };
+  }, [forbidden, isLoading, patientId, user]);
 
   const unresolvedCount = useMemo(() => flags.filter((flag) => !flag.resolved).length, [flags]);
   function onResolved(updated: InteractionFlag) { setFlags((current) => current.map((flag) => flag.id === updated.id ? updated : flag)); setResolveFlag(null); }

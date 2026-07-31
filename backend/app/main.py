@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 
-from app.routers import auth,patients,doctors,enteries,medications,flags,audit
+from app.routers import auth,patients,doctors,enteries,medications,flags,audit,realtime
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 
@@ -21,6 +21,7 @@ app.include_router(enteries.router)
 app.include_router(medications.router)
 app.include_router(flags.router)
 app.include_router(audit.router)
+app.include_router(realtime.router)
 
 @app.get("/health")
 async def health():
