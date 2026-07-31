@@ -42,6 +42,7 @@ class InteractionFlag(Base):
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
     )
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolution_note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     flagged_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)

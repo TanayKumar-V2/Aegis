@@ -9,6 +9,7 @@ from app.models.user import User, UserRole
 from app.models.care_circle import CareCircle, CareCircleStatus
 from app.schemas.care_circle import CareCircleInvite, CareCircleResponse, CareCircleUpdate
 from app.middleware.auth_dependency import get_current_user
+from app.services.audit import log_action
 
 router = APIRouter(prefix="/patients", tags=["patients"])
 
@@ -80,10 +81,30 @@ async def update_care_circle(
             detail="Only the patient can modify their own care circle",
         )
 
+    old_scope = circle.permission_scope.value
+    old_status = circle.status.value
+
     if payload.permission_scope is not None:
         circle.permission_scope = payload.permission_scope
     if payload.status is not None:
         circle.status = payload.status
+
+    action = "revoked_access" if payload.status and payload.status.value == "revoked" else "permission_scope_changed"
+
+    await log_action(
+        db=db,
+        actor_id=current_user.id,
+        patient_id=circle.patient_id,
+        action=action,
+        metadata={
+            "circle_id": str(circle.id),
+            "doctor_id": str(circle.doctor_id),
+            "old_scope": old_scope,
+            "new_scope": circle.permission_scope.value,
+            "old_status": old_status,
+            "new_status": circle.status.value,
+        },
+    )
 
     await db.commit()
     await db.refresh(circle)
